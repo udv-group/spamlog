@@ -36,12 +36,12 @@ fn get_syslog_msg(msg_type: &MsgType, pid: u32, msg_id: i32) -> String {
     let datetime = Local::now();
     match msg_type {
         MsgType::Syslog3164 => format!(
-            "<34>{} {} spamlog[{}]: msg_id {} \n",
+            "<34>{} {} spamlog[{}]: msg_id {}\n",
             datetime.naive_local().format("%b %e %H:%M:%S"), hostname, pid, msg_id
         ),
         MsgType::Syslog5424 => format!(
             "<34>1 {} {} spamlog {} {} - hello from rust!\n",
-            datetime.to_rfc3339(), hostname, pid, msg_id
+            datetime.to_rfc3339_opts(SecondsFormat::Millis, false), hostname, pid, msg_id
         ),
     }
 }
