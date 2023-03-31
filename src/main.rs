@@ -4,10 +4,9 @@ use std::process;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpStream, UdpSocket};
 
-use clap::Parser;
 use chrono::prelude::*;
+use clap::Parser;
 use governor::{Quota, RateLimiter};
-use hostname;
 
 #[derive(Parser)]
 struct Cli {
@@ -32,16 +31,25 @@ enum MsgType {
 
 #[inline(always)]
 fn get_syslog_msg(msg_type: &MsgType, pid: u32, msg_id: i32) -> String {
-    let hostname = hostname::get().expect("Unable to get hostname!").into_string().expect("Unable to convert hostname to UTF-8, wtf is your hostname anyway?");
+    let hostname = hostname::get()
+        .expect("Unable to get hostname!")
+        .into_string()
+        .expect("Unable to convert hostname to UTF-8, wtf is your hostname anyway?");
     let datetime = Local::now();
     match msg_type {
         MsgType::Syslog3164 => format!(
             "<34>{} {} spamlog[{}]: msg_id {}\n",
-            datetime.naive_local().format("%b %e %H:%M:%S"), hostname, pid, msg_id
+            datetime.naive_local().format("%b %e %H:%M:%S"),
+            hostname,
+            pid,
+            msg_id
         ),
         MsgType::Syslog5424 => format!(
             "<34>1 {} {} spamlog {} {} - hello from rust!\n",
-            datetime.to_rfc3339_opts(SecondsFormat::Millis, false), hostname, pid, msg_id
+            datetime.to_rfc3339_opts(SecondsFormat::Millis, false),
+            hostname,
+            pid,
+            msg_id
         ),
     }
 }
@@ -54,7 +62,7 @@ async fn spam_tcp(addr: &str, msg_type: MsgType, rate: NonZeroU32) {
     for num in 0.. {
         let msg = get_syslog_msg(&msg_type, pid, num);
         limiter.until_ready().await;
-        stream.write(msg.as_bytes()).await.unwrap();
+        stream.write_all(msg.as_bytes()).await.unwrap();
     }
 }
 
@@ -64,7 +72,7 @@ async fn ddos_tcp(addr: &str, msg_type: MsgType) {
     println!("DDoS'ing {addr} over TCP");
     for num in 0.. {
         let msg = get_syslog_msg(&msg_type, pid, num);
-        stream.write(msg.as_bytes()).await.unwrap();
+        stream.write_all(msg.as_bytes()).await.unwrap();
     }
 }
 
@@ -97,12 +105,11 @@ async fn ddos_udp(addr: &str, msg_type: MsgType) {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let msg_type;
-    if cli.use_bsd {
-        msg_type = MsgType::Syslog3164;
+    let msg_type = if cli.use_bsd {
+        MsgType::Syslog3164
     } else {
-        msg_type = MsgType::Syslog5424;
-    }
+        MsgType::Syslog5424
+    };
     if cli.use_udp {
         match cli.rate {
             Some(r) => spam_udp(&cli.addr, msg_type, r).await,
