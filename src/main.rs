@@ -16,7 +16,7 @@ struct Cli {
     /// whether to use UDP instead of TCP
     #[clap(short = 'u', long = "udp", action)]
     use_udp: bool,
-    /// whether to use 3164 (DBS) of 5424 syslog format
+    /// whether to use 3164 (BSD) of 5424 syslog format
     #[clap(short = 'b', long = "bsd", action)]
     use_bsd: bool,
     /// Messages per second
