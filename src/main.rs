@@ -22,7 +22,7 @@ struct Cli {
     /// path to a file with message body to use
     #[arg(short, long)]
     file: Option<PathBuf>,
-    /// network address of syslog server in format <ip>:<port>
+    /// network addresss of syslog server in format <ip>:<port>
     #[arg(short, long, value_parser)]
     addr: String,
     /// what trasport layer protocol to use
@@ -30,7 +30,7 @@ struct Cli {
     transport: Transport,
     /// what syslog protocol to use
     #[arg(short, long, value_enum, default_value_t = Protocol::Syslog5424)]
-    portocol: Protocol,
+    protocol: Protocol,
     /// Messages per second
     #[arg(short, long)]
     rate: Option<NonZeroU32>,
@@ -92,7 +92,7 @@ fn get_syslog_msg(msg_type: &Protocol, pid: u32, msg_id: i32, body: &str) -> Res
 async fn spam_tcp(addr: &str, msg_type: Protocol, rate: NonZeroU32, body: &str) -> Result<()> {
     let mut stream = TcpStream::connect(addr)
         .await
-        .context("Unable to connect to specified addres")?;
+        .context("Unable to connect to specified address")?;
     let limiter = RateLimiter::direct(Quota::per_second(rate));
     let pid = process::id();
     println!("Spamming {addr} over TCP {msg_type}");
@@ -110,7 +110,7 @@ async fn spam_tcp(addr: &str, msg_type: Protocol, rate: NonZeroU32, body: &str) 
 async fn ddos_tcp(addr: &str, msg_type: Protocol, body: &str) -> Result<()> {
     let mut stream = TcpStream::connect(addr)
         .await
-        .context("Unable to connect to specified addres")?;
+        .context("Unable to connect to specified addresss")?;
     let pid = process::id();
     println!("DDoS'ing {addr} over TCP {msg_type}");
     for num in 0.. {
@@ -171,18 +171,18 @@ async fn main() -> Result<()> {
             if bytes != 0 {
                 Ok(data)
             } else {
-                bail!("File is empy!")
+                bail!("File is empty!")
             }
         })
         .unwrap_or(Ok(cli.body))?;
     match cli.transport {
         Transport::Udp => match cli.rate {
-            Some(r) => spam_udp(&cli.addr, cli.portocol, r, &body).await?,
-            None => ddos_udp(&cli.addr, cli.portocol, &body).await?,
+            Some(r) => spam_udp(&cli.addr, cli.protocol, r, &body).await?,
+            None => ddos_udp(&cli.addr, cli.protocol, &body).await?,
         },
         Transport::Tcp => match cli.rate {
-            Some(r) => spam_tcp(&cli.addr, cli.portocol, r, &body).await?,
-            None => ddos_tcp(&cli.addr, cli.portocol, &body).await?,
+            Some(r) => spam_tcp(&cli.addr, cli.protocol, r, &body).await?,
+            None => ddos_tcp(&cli.addr, cli.protocol, &body).await?,
         },
     }
     Ok(())
