@@ -1,124 +1,189 @@
+use std::fmt::Display;
+use std::fs::File;
+use std::io::Read;
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::process;
 
+use anyhow::{anyhow, bail, Context, Result};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpStream, UdpSocket};
 
 use chrono::prelude::*;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use governor::{Quota, RateLimiter};
 
 #[derive(Parser)]
+#[command(about = "Simple syslog spammer for load testing syslog servers. By default uses Syslog 5414 over TCP", long_about = None)]
 struct Cli {
+    /// message body to use. Can not be used together with --file
+    #[arg(default_value = "hello from rust!", conflicts_with = "file")]
+    body: String,
+    /// path to a file with message body to use
+    #[arg(short, long)]
+    file: Option<PathBuf>,
     /// network address of syslog server in format <ip>:<port>
-    #[clap(short, long, value_parser)]
+    #[arg(short, long, value_parser)]
     addr: String,
-    /// whether to use UDP instead of TCP
-    #[clap(short = 'u', long = "udp", action)]
-    use_udp: bool,
-    /// whether to use 3164 (BSD) of 5424 syslog format
-    #[clap(short = 'b', long = "bsd", action)]
-    use_bsd: bool,
+    /// what trasport layer protocol to use
+    #[arg(short, long, value_enum,  default_value_t = Transport::Tcp)]
+    transport: Transport,
+    /// what syslog protocol to use
+    #[arg(short, long, value_enum, default_value_t = Protocol::Syslog5424)]
+    portocol: Protocol,
     /// Messages per second
-    #[clap(short, long)]
+    #[arg(short, long)]
     rate: Option<NonZeroU32>,
 }
 
-enum MsgType {
+#[derive(Clone, ValueEnum)]
+enum Protocol {
     Syslog3164,
     Syslog5424,
 }
 
+impl Display for Protocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Protocol::Syslog3164 => "Syslog 3164",
+                Protocol::Syslog5424 => "Syslog 5424",
+            }
+        )
+    }
+}
+
+#[derive(Clone, ValueEnum)]
+enum Transport {
+    Tcp,
+    Udp,
+}
+
 #[inline(always)]
-fn get_syslog_msg(msg_type: &MsgType, pid: u32, msg_id: i32) -> String {
+fn get_syslog_msg(msg_type: &Protocol, pid: u32, msg_id: i32, body: &str) -> Result<String> {
     let hostname = hostname::get()
-        .expect("Unable to get hostname!")
+        .context("Unable to get hostname!")?
         .into_string()
-        .expect("Unable to convert hostname to UTF-8, wtf is your hostname anyway?");
+        .map_err(|_| anyhow!("Unable to parse hostname to UTF-8"))?;
     let datetime = Local::now();
-    match msg_type {
-        MsgType::Syslog3164 => format!(
-            "<34>{} {} spamlog[{}]: msg_id {}\n",
+    let msg = match msg_type {
+        Protocol::Syslog3164 => format!(
+            "<34>{} {} spamlog[{}]: msg_id {} {}\n",
             datetime.naive_local().format("%b %e %H:%M:%S"),
             hostname,
             pid,
-            msg_id
+            msg_id,
+            body,
         ),
-        MsgType::Syslog5424 => format!(
-            "<34>1 {} {} spamlog {} {} - hello from rust!\n",
+        Protocol::Syslog5424 => format!(
+            "<34>1 {} {} spamlog {} {} - {}\n",
             datetime.to_rfc3339_opts(SecondsFormat::Millis, false),
             hostname,
             pid,
-            msg_id
+            msg_id,
+            body,
         ),
-    }
+    };
+    Ok(msg)
 }
 
-async fn spam_tcp(addr: &str, msg_type: MsgType, rate: NonZeroU32) {
-    let mut stream = TcpStream::connect(addr).await.expect("Unable to connect!");
+async fn spam_tcp(addr: &str, msg_type: Protocol, rate: NonZeroU32, body: &str) -> Result<()> {
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .context("Unable to connect to specified addres")?;
     let limiter = RateLimiter::direct(Quota::per_second(rate));
     let pid = process::id();
-    println!("Spamming {addr} over TCP");
+    println!("Spamming {addr} over TCP {msg_type}");
     for num in 0.. {
-        let msg = get_syslog_msg(&msg_type, pid, num);
+        let msg = get_syslog_msg(&msg_type, pid, num, body)?;
         limiter.until_ready().await;
-        stream.write_all(msg.as_bytes()).await.unwrap();
+        stream
+            .write_all(msg.as_bytes())
+            .await
+            .context("Unable to send the message!")?;
     }
+    Ok(())
 }
 
-async fn ddos_tcp(addr: &str, msg_type: MsgType) {
-    let mut stream = TcpStream::connect(addr).await.expect("Unable to connect!");
-    let pid = process::id();
-    println!("DDoS'ing {addr} over TCP");
-    for num in 0.. {
-        let msg = get_syslog_msg(&msg_type, pid, num);
-        stream.write_all(msg.as_bytes()).await.unwrap();
-    }
-}
-
-async fn spam_udp(addr: &str, msg_type: MsgType, rate: NonZeroU32) {
-    let socket = UdpSocket::bind("0.0.0.0:2345")
+async fn ddos_tcp(addr: &str, msg_type: Protocol, body: &str) -> Result<()> {
+    let mut stream = TcpStream::connect(addr)
         .await
-        .expect("Unable to bind!");
+        .context("Unable to connect to specified addres")?;
+    let pid = process::id();
+    println!("DDoS'ing {addr} over TCP {msg_type}");
+    for num in 0.. {
+        let msg = get_syslog_msg(&msg_type, pid, num, body)?;
+        stream
+            .write_all(msg.as_bytes())
+            .await
+            .context("Unable to send the message!")?;
+    }
+    Ok(())
+}
+
+async fn spam_udp(addr: &str, msg_type: Protocol, rate: NonZeroU32, body: &str) -> Result<()> {
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .await
+        .context("Unable to bind the socket")?;
     let pid = process::id();
 
     let limiter = RateLimiter::direct(Quota::per_second(rate));
-    println!("Spamming {addr} over UDP");
+    println!("Spamming {addr} over UDP {msg_type}");
     for num in 0.. {
-        let msg = get_syslog_msg(&msg_type, pid, num);
+        let msg = get_syslog_msg(&msg_type, pid, num, body)?;
         limiter.until_ready().await;
-        socket.send_to(msg.as_bytes(), addr).await.unwrap();
+        socket
+            .send_to(msg.as_bytes(), addr)
+            .await
+            .context("Unable to send the message!")?;
     }
+    Ok(())
 }
 
-async fn ddos_udp(addr: &str, msg_type: MsgType) {
-    let socket = UdpSocket::bind("0.0.0.0:2345")
+async fn ddos_udp(addr: &str, msg_type: Protocol, body: &str) -> Result<()> {
+    let socket = UdpSocket::bind("0.0.0.0:0")
         .await
-        .expect("Unable to bind!");
+        .context("Unable to bind the socket")?;
     let pid = process::id();
-    println!("DDoS'ing {addr} over UDP");
+    println!("DDoS'ing {addr} over UDP with {msg_type}");
     for num in 0.. {
-        let msg = get_syslog_msg(&msg_type, pid, num);
-        socket.send_to(msg.as_bytes(), addr).await.unwrap();
+        let msg = get_syslog_msg(&msg_type, pid, num, body)?;
+        socket
+            .send_to(msg.as_bytes(), addr)
+            .await
+            .context("Unable to send the message!")?;
     }
+    Ok(())
 }
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let msg_type = if cli.use_bsd {
-        MsgType::Syslog3164
-    } else {
-        MsgType::Syslog5424
-    };
-    if cli.use_udp {
-        match cli.rate {
-            Some(r) => spam_udp(&cli.addr, msg_type, r).await,
-            None => ddos_udp(&cli.addr, msg_type).await,
-        }
-    } else {
-        match cli.rate {
-            Some(r) => spam_tcp(&cli.addr, msg_type, r).await,
-            None => ddos_tcp(&cli.addr, msg_type).await,
-        }
+    let body = cli
+        .file
+        .map(|x| {
+            let mut file = File::open(x).context("Unable to open file!")?;
+            let mut data = String::new();
+            let bytes = file
+                .read_to_string(&mut data)
+                .context("Unable to read file contents!")?;
+            if bytes != 0 {
+                Ok(data)
+            } else {
+                bail!("File is empy!")
+            }
+        })
+        .unwrap_or(Ok(cli.body))?;
+    match cli.transport {
+        Transport::Udp => match cli.rate {
+            Some(r) => spam_udp(&cli.addr, cli.portocol, r, &body).await?,
+            None => ddos_udp(&cli.addr, cli.portocol, &body).await?,
+        },
+        Transport::Tcp => match cli.rate {
+            Some(r) => spam_tcp(&cli.addr, cli.portocol, r, &body).await?,
+            None => ddos_tcp(&cli.addr, cli.portocol, &body).await?,
+        },
     }
+    Ok(())
 }
