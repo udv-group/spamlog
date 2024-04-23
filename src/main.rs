@@ -14,7 +14,7 @@ use clap::{Parser, ValueEnum};
 use governor::{Quota, RateLimiter};
 
 #[derive(Parser)]
-#[command(about = "Simple syslog spammer for load testing syslog servers. By default uses Syslog 5414 over TCP", long_about = None)]
+#[command(about = "Simple syslog spammer for load testing syslog servers. By default uses Syslog 5424 over TCP", long_about = None)]
 struct Cli {
     /// message body to use. Can not be used together with --file
     #[arg(default_value = "hello from rust!", conflicts_with = "file")]
